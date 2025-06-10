@@ -1,0 +1,44 @@
+body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background-color: #000;
+    color: #fff;
+    font-family: Arial, sans-serif;
+}
+
+.loading-container {
+    display: flex;
+    align-items: center;
+}
+
+.loading-text-container {
+    width: 160px; /* Fixed width to prevent shifting */
+    text-align: right; /* Align text to the right */
+    margin-right: 40px; /* Margin between text and bar */
+    /* font-family: ; */
+}
+
+.loading-text {
+    font-size: 24px;
+}
+
+.loading-bar-container {
+    border: 2px solid #fff; /* Outline with no fill */
+    padding: 5px; /* Padding inside the outline */
+    display: flex;
+    align-items: center;
+}
+
+.loading-bar {
+    display: flex;
+}
+
+.loading-square {
+    width: 20px;
+    height: 20px;
+    background-color: #fff;
+    margin-right: 5px;
+    opacity: 0;
+}

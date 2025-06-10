@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stabilized Liquid SVG Animation</title>
+    <style>
+        body, html {
+            margin: 0;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+        }
+        svg {
+            display: block;
+            width: 100%;
+            height: 100vh;
+            background-color: #030303;
+        }
+        #liquid {
+            fill: rgba(30, 60, 90, 0.8);
+            stroke: deepskyblue;
+            stroke-width: 3px;
+        }
+    </style>
+</head>
+<body>
+    <svg id="liquid-svg">
+        <path id="liquid" d=""></path>
+    </svg>
+
+    <script>
+        const svg = document.getElementById('liquid-svg');
+        const path = document.getElementById('liquid');
+        const canvasWidth = svg.clientWidth;
+        const canvasHeight = svg.clientHeight;
+        const nodes = 1000;
+        const nodeSpacing = canvasWidth / (nodes - 1);
+        let nodeHeights = Array.from({ length: nodes }, () => canvasHeight / 2);
+        let nodeVelocities = Array.from({ length: nodes }, () => 0);
+        const springConstant = 0.04;
+        const damping = 0.85;
+        const influenceRadius = 500;
+        const neutralHeight = canvasHeight / 2;
+
+        let mouseX = -100;
+        let mouseY = -100;
+        let activeMouse = false;
+
+        svg.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+            activeMouse = true;
+        });
+
+        svg.addEventListener('mouseleave', () => {
+            mouseX = -100;
+            mouseY = -100;
+            activeMouse = false;
+        });
+
+        function updateLiquid() {
+            let d = `M 0 ${canvasHeight}`;
+            let curvePoints = [];
+            let totalHeight = 0;
+
+            for (let i = 0; i < nodes; i++) {
+                let x = i * nodeSpacing;
+                let distance = Math.abs(mouseX - x);
+                let influence = 0;
+
+                if (activeMouse && distance < influenceRadius) {
+                    let decayFactor = Math.exp(-Math.pow(distance / influenceRadius, 2) * 8);
+                    influence = (mouseY - neutralHeight) * decayFactor;
+                }
+
+                let springForce = (neutralHeight + influence - nodeHeights[i]) * springConstant;
+                nodeVelocities[i] += springForce;
+                nodeVelocities[i] *= damping;
+                nodeHeights[i] += nodeVelocities[i];
+                totalHeight += nodeHeights[i];
+            }
+
+            let averageHeight = totalHeight / nodes;
+            let heightAdjustment = neutralHeight - averageHeight;
+
+            for (let i = 0; i < nodes; i++) {
+                nodeHeights[i] += heightAdjustment;
+                let y = Math.max(0, Math.min(canvasHeight, nodeHeights[i])); // Clamp to prevent out-of-bounds
+                curvePoints.push({x: i * nodeSpacing, y});
+            }
+
+            for (let i = 0; i < curvePoints.length - 1; i++) {
+                let cpX = (curvePoints[i].x + curvePoints[i + 1].x) / 2;
+                let cpY = (curvePoints[i].y + curvePoints[i + 1].y) / 2;
+                d += ` Q ${cpX} ${cpY}, ${curvePoints[i + 1].x} ${curvePoints[i + 1].y}`;
+            }
+
+            d += ` L ${canvasWidth} ${canvasHeight}`;
+            d += ` L 0 ${canvasHeight} Z`;
+            path.setAttribute('d', d);
+            requestAnimationFrame(updateLiquid);
+        }
+
+        updateLiquid();
+    </script>
+</body>
+</html>
