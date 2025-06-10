@@ -1,0 +1,829 @@
+// === Global Variables & Parameters ===
+let numTeams = 8;
+// Map level and virtual dimensions:
+let mapLevel = 2;  // 0: small, 1: medium, 2: big
+let mapWidth, mapHeight;
+if (mapLevel === 0) { mapWidth = 800; mapHeight = 800; }
+else if (mapLevel === 1) { mapWidth = 1000; mapHeight = 1000; }
+else if (mapLevel === 2) { mapWidth = 1200; mapHeight = 1200; }
+
+let simulationStarted = false;
+let bases = [];
+let units = [];
+let projectiles = [];  // for ranged projectiles
+
+let teamCaptures = new Map();
+
+// Spawning parameters
+let spawnInterval = 10000;  // ms between waves
+let spawnUnitDelay = 300;   // ms delay between unit spawns in a wave
+
+// Base HP settings
+let baseHP = 1000;
+let additionalBaseHPInitial = 200;
+
+let unitParams = {
+  normal: { hp: 20, speed: 1.5, radius: 8, attackDamage: 5, aggroRange: 20, baseUnitSpawnCount: 3, baseHP: 1000, aroundBaseAggroRange: 200},
+  elite: { hp: 40, speed: 1.2, radius: 12, attackDamage: 8, aggroRange: 20, baseUnitSpawnCount: 2, baseHP: 400, aroundBaseAggroRange: 200},
+  super: { hp: 80, speed: 1.0, radius: 16, attackDamage: 5, aggroRange: 10, baseUnitSpawnCount: 1, baseHP: 200, aroundBaseAggroRange: 50 },
+  middle: { hp: 30, speed: 1.4, radius: 8, attackDamage: 6, aggroRange: 40, baseUnitSpawnCount: 1, baseHP: 400, aroundBaseAggroRange: 400, range: 150 },
+  minion: { hp: 10, speed: 3, radius: 5, attackDamage: 2, aggroRange: 4, baseUnitSpawnCount: 5, baseHP: 300, aroundBaseAggroRange: 40 }
+};
+
+let attackDistance = 15;      // melee range
+let attackCooldown = 1000;    // ms between attacks
+let centerMultiplier = 4;     // spawn rate multiplier for center additional bases
+let additionalMultiplier = 2; // for intermediate additional bases
+let captureRange = 100;       // if a base is within this range, units pause their mission
+
+const BASE_SIZE = 50;  // Virtual base size
+
+
+// Array of 8 distinct team colors:
+let teamColors;
+
+// === Setup & Draw (with scaling) ===
+
+function setup() {
+  teamColors = [
+    color(255, 0, 0),    // red
+    color(0, 255, 0),    // green
+    color(0, 0, 255),    // blue
+    color(255, 255, 0),  // yellow
+    color(255, 0, 255),  // magenta
+    color(0, 255, 255),  // cyan
+    color(255, 165, 0),  // orange
+    color(128, 0, 128)
+  ];
+
+  createCanvas(800, 800);
+  textFont('monospace');
+  simulationStarted = true;
+  initBases();
+}
+
+function draw() {
+  // Scale the virtual map to fit the fixed canvas.
+  let scaleFactor = width / mapWidth;
+  push();
+  scale(scaleFactor);
+
+  background(220);
+
+  // Spawn waves from each base.
+  for (let b of bases) {
+    if (!b.alive) continue;
+    // For additional bases, spawn only if captured.
+    if (b.type !== "original" && b.team == null) continue;
+
+    let multiplier = 1;
+    if (b.type === "original") multiplier = 1;
+    else if (b.type === "additional") {
+      if (b.locationType === "center") multiplier = centerMultiplier;
+      else if (b.locationType === "intermediate") multiplier = additionalMultiplier;
+      else if (b.locationType === "extra") multiplier = 1;
+    }
+    if (millis() - b.lastSpawnTime > spawnInterval * multiplier) {
+      spawnWave(b);
+      b.lastSpawnTime = millis();
+    }
+  }
+
+  // Display bases.
+  for (let b of bases) { b.display(); }
+
+  // Update and display units.
+  for (let i = units.length - 1; i >= 0; i--) {
+    let u = units[i];
+    u.update();
+    u.display();
+  }
+
+  // Update and display projectiles.
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    let p = projectiles[i];
+    p.update();
+    p.display();
+    if (p.toDelete) projectiles.splice(i, 1);
+  }
+
+  pop();  // end scale
+
+  push();
+  text("Winner: ", width, - height/2);
+  textSize(16);
+  fill(0);
+  textAlign(CENTER, CENTER);
+  pop();
+
+  // Determine winner.
+  let teamsAlive = new Set();
+  for (let b of bases) {
+    if (b.alive && b.team != null) teamsAlive.add(b.team.name);
+  }
+  if (teamsAlive.size === 1 && teamsAlive.size > 0) {
+    push();
+    textSize(32);
+    fill(0);
+    textAlign(CENTER, CENTER);
+    text("Winner: " + teamsAlive.values().next().value, width/2, height/2);
+    pop();
+    noLoop();
+  }
+}
+
+// === Base & Unit Initialization ===
+
+// Create 8 original (main) bases along the edges.
+// Extra main bases remain neutral (gray) if numTeams < 8.
+function initBases() {
+  bases = [];
+  let margin = 50;
+  let positions = [
+    { x: margin, y: margin },
+    { x: mapWidth/2 - BASE_SIZE/2, y: margin },
+    { x: mapWidth - margin - BASE_SIZE, y: margin },
+    { x: mapWidth - margin - BASE_SIZE, y: mapHeight/2 - BASE_SIZE/2 },
+    { x: mapWidth - margin - BASE_SIZE, y: mapHeight - margin - BASE_SIZE },
+    { x: mapWidth/2 - BASE_SIZE/2, y: mapHeight - margin - BASE_SIZE },
+    { x: margin, y: mapHeight - margin - BASE_SIZE },
+    { x: margin, y: mapHeight/2 - BASE_SIZE/2 }
+  ];
+  // Create 8 original bases./////////////////////////////////////////////////////////
+  // Create 8 original bases using random positions, removing each after selection.
+  for (let i = 0; i < numTeams; i++) {
+    let randomIndex = Math.floor(Math.random() * positions.length);
+    let pos = positions.splice(randomIndex, 1)[0];
+
+    let col = (i < numTeams) ? teamColors[i] : color(200);
+    let base = new Base(pos.x, pos.y, "Main Base " + (i + 1), col, "original");
+    base.hp = baseHP;
+    base.maxHP = baseHP;
+
+    if (i < numTeams) {
+      base.team = base; // Assigned team.
+    } else {
+      base.team = null; // Neutral.
+    }
+
+    teamCaptures.set(base, 1);
+    bases.push(base);
+  }
+
+  // Create additional bases.
+  let centerX = mapWidth / 2, centerY = mapHeight / 2;
+  if (mapLevel === 0) {
+    let ab = new Base(centerX - BASE_SIZE/2, centerY - BASE_SIZE/2, "", color(150), "additional");
+    ab.locationType = "center";
+    assignRandomSpawnType(ab);
+    bases.push(ab);
+  } else if (mapLevel === 1) {
+    let centerAb = new Base(centerX - BASE_SIZE/2, centerY - BASE_SIZE/2, "", color(150), "additional");
+    centerAb.locationType = "center";
+    assignRandomSpawnType(centerAb);
+    bases.push(centerAb);
+    for (let orig of bases.filter(b => b.type === "original")) {
+      let bx = orig.x + BASE_SIZE/2, by = orig.y + BASE_SIZE/2;
+      let midX = (centerX + bx) / 2;
+      let midY = (centerY + by) / 2;
+      let ab = new Base(midX - BASE_SIZE/2, midY - BASE_SIZE/2, "", color(150), "additional");
+      ab.locationType = "intermediate";
+      assignRandomSpawnType(ab);
+      bases.push(ab);
+    }
+  } else if (mapLevel === 2) {
+    let centerAb = new Base(centerX - BASE_SIZE/2, centerY - BASE_SIZE/2, "", color(150), "additional");
+    centerAb.locationType = "center";
+    assignRandomSpawnType(centerAb);
+    bases.push(centerAb);
+    let originalBases = bases.filter(b => b.type === "original");
+    for (let orig of originalBases) {
+      let bx = orig.x + BASE_SIZE/2, by = orig.y + BASE_SIZE/2;
+      let midX = (centerX + bx) / 2;
+      let midY = (centerY + by) / 2;
+      let ab1 = new Base(midX - BASE_SIZE/2, midY - BASE_SIZE/2, "", color(150), "additional");
+      ab1.locationType = "intermediate";
+      assignRandomSpawnType(ab1);
+      bases.push(ab1);
+      let extraX = centerX + 0.75 * (bx - centerX);
+      let extraY = centerY + 0.75 * (by - centerY);
+      let ab2 = new Base(extraX - BASE_SIZE/2, extraY - BASE_SIZE/2, "", color(150), "additional");
+      ab2.locationType = "extra";
+      assignRandomSpawnType(ab2);
+      bases.push(ab2);
+    }
+  }
+
+  // Initialize spawn timers.
+  for (let b of bases) { b.lastSpawnTime = millis(); }
+}
+
+// === Additional Base Type Assignment ===
+// Additional bases are randomly assigned one of "elite", "middle", "minion", or "super".
+function assignRandomSpawnType(baseObj) {
+  baseObj.spawnType = random(["elite", "middle", "minion", "super"]);
+
+  let typeData = unitParams[baseObj.spawnType];
+
+  Object.assign(baseObj, {
+    name: `${baseObj.spawnType.charAt(0).toUpperCase() + baseObj.spawnType.slice(1)} Base`,
+    hp: typeData.baseHP,
+    maxHP: typeData.baseHP,
+    unitsSpawnCount: typeData.baseUnitSpawnCount
+  });
+}
+
+// === Wave Spawning ===
+// When a wave spawns from a base, one common objective is determined for the entire wave.
+function spawnWave(b) {
+  let waveSize, unitType;
+  if (b.type === "original") {
+    waveSize = 3;
+    unitType = "normal";
+  } else if (b.type === "additional") {
+    unitType = b.spawnType;
+    waveSize = b.unitsSpawnCount;
+  }
+
+  let commonObjective = chooseTargetBase(b.team);
+  for (let i = 0; i < waveSize; i++) {
+    setTimeout(() => {
+      let offsetX = random(-10, 10);
+      let offsetY = random(-10, 10);
+      let unit = new Unit(b.x + BASE_SIZE/2 + offsetX, b.y + BASE_SIZE/2 + offsetY, b, commonObjective, unitType);
+      if (unit.unitType === "middle") unit.lockedTarget = null;
+      units.push(unit);
+    }, i * spawnUnitDelay);
+  }
+}
+
+// === Target Selection Functions ===
+function chooseTargetBase(ourTeam) {
+  let teamWeights = new Map(); // Use Map to track team names and their total weights
+
+  // Count weights for each team (number of buildings)
+  for (let b of bases) {
+    if (!b.alive || b.team?.name === ourTeam.name) continue;
+    if (b.type === "original" || b.type === "additional") {
+      const teamName = b.team?.name || "neutral";
+      let selectedTeamWeight = teamWeights.get(teamName);
+
+      let weightToAdd = 1;
+
+      if(selectedTeamWeight)
+      {
+        weightToAdd = 10;
+      }
+
+      teamWeights.set(teamName, (selectedTeamWeight || 0) + weightToAdd);
+    }
+  }
+
+  // Convert to array of {name, weight} objects
+  let weightedTeams = Array.from(teamWeights, ([name, weight]) => ({ name, weight }));
+
+  // If no valid targets, fallback to neutrals/others
+  if (weightedTeams.length === 0) {
+    let fallbackTargets = bases.filter(b => b.alive && (b.team?.name !== ourTeam.name));
+    return random(fallbackTargets);
+  }
+
+  // Calculate total weight for probability distribution
+  let totalWeight = weightedTeams.reduce(
+      (sum, t) => sum + t.weight, 0
+  );
+
+  // Random selection with weighting
+  let randomValue = random(totalWeight);
+  let accumulated = 0;
+  let chosenTeam;
+
+  for (let t of weightedTeams) {
+    accumulated += t.weight;
+    if (randomValue <= accumulated) {
+      chosenTeam = t.name;
+      break;
+    }
+  }
+
+  // Get potential targets for chosen team
+  let targets = bases.filter(b =>
+      b.alive &&
+      b.team?.name === chosenTeam &&
+      (b.type === "original" || b.type === "additional")
+  );
+
+  // Prefer original bases slightly more than additional ones
+  let mainBases = targets.filter(b => b.type === "original");
+  let additionalBases = targets.filter(b => b.type === "additional");
+
+  if (mainBases.length > 0 && additionalBases.length > 0) {
+    return random() > 0.7 ? random(mainBases) : random(additionalBases);
+  }
+
+  return random(targets);
+}
+
+function getNearestUncapturedBase(ourTeam)
+{
+  let nearest = null, nearestDist = Infinity;
+  for (let b of bases) {
+    if (!b.team) {
+      let d = dist(this.x, this.y, b.x + BASE_SIZE / 2, b.y + BASE_SIZE / 2);
+      if (d < captureRange && d < nearestDist) {
+        nearest = b;
+        nearestDist = d;
+      }
+    }
+  }
+
+  if(nearest)
+  {
+    return nearest;
+  }
+  else{
+   return chooseTargetBase(ourTeam);
+  }
+}
+
+function chooseDecisionTarget(ourTeam) {
+  let ourTeamBaseCount = teamCaptures[ourTeam];
+  let captureThreshold = 0;
+
+  for (let b of bases)
+  {
+    captureThreshold = teamCaptures[b.team];
+  }
+
+  captureThreshold = captureThreshold / numTeams;
+
+  if(ourTeamBaseCount <= captureThreshold)
+  {
+    return getNearestUncapturedBase(ourTeam);
+  }
+
+  // Same weighting logic as chooseTargetBase
+  let teamWeights = new Map();
+
+  for (let b of bases) {
+    if (!b.alive || b.team?.name === ourTeam.name) continue;
+    if (b.type === "original" || b.type === "additional") {
+      const teamName = b.team?.name || "neutral";
+      teamWeights.set(teamName, (teamWeights.get(teamName) || 0) + 1);
+    }
+  }
+
+  let teams = [];
+  for (let name in teamCounts) { teams.push({ name: name, count: teamCounts[name] }); }
+  if (teams.length === 0) return chooseTargetBase(ourTeam);
+  let maxCount = Math.max(...teams.map(t => t.count));
+  let totalWeight = 0;
+  let weightedTeams = [];
+  for (let t of teams) {
+    let weight = t.count;
+    if (t.count === maxCount) weight *= 1.1;
+    weightedTeams.push({ name: t.name, weight: weight });
+    totalWeight += weight;
+  }
+  let r = random(totalWeight);
+  let chosenTeamName;
+  for (let t of weightedTeams) {
+    r -= t.weight;
+    if (r <= 0) { chosenTeamName = t.name; break; }
+  }
+  let mainBase = bases.find(b => b.type === "original" && b.team && b.team.name === chosenTeamName);
+  let expansionBases = bases.filter(b => b.type === "additional" && b.team && b.team.name === chosenTeamName);
+  if (expansionBases.length > 0)
+    return (random() < 0.5) ? random(expansionBases) : mainBase;
+  else return mainBase;
+}
+
+// === Classes ===
+
+class Base {
+  constructor(x, y, name, col, type) {
+    this.x = x;
+    this.y = y;
+    this.name = name;
+    this.col = col;
+    this.type = type; // "original" or "additional"
+    this.alive = true;
+    this.size = BASE_SIZE;
+    this.lastSpawnTime = 0;
+    this.unitsSpawnCount = 1;
+    this.unitType = "normal";
+    if (type === "original") {
+      this.hp = baseHP;
+      this.maxHP = baseHP;
+      this.team = null; // will be set in initBases()
+    } else {
+      this.hp = additionalBaseHPInitial;
+      this.maxHP = additionalBaseHPInitial;
+      this.team = null; // remains neutral until captured
+      this.spawnType = null;
+      this.locationType = "";
+    }
+  }
+
+  takeDamage(attacker)
+  {
+    this.hp -= attacker.attackDamage;
+    if (this.hp <= 0) {
+      if(this.team)
+      {
+        teamCaptures[this.team] = teamCaptures[this.team] - 1;
+      }
+
+      this.team = attacker.team;
+      this.col = attacker.col;
+      this.hp = this.maxHP;  // fully restore HP
+      teamCaptures[this.team] = teamCaptures[this.team] + 1;
+    }
+  }
+
+  display() {
+    if (!this.alive) return;
+    if (this.type === "additional" && this.team == null) fill(150);
+    else fill(this.col);
+    rect(this.x, this.y, this.size, this.size);
+    fill(0);
+    textSize(12);
+    textAlign(CENTER);
+    text(this.name, this.x + this.size / 2, this.y - 10);
+    text(this.hp + "/" + this.maxHP, this.x + this.size / 2, this.y + this.size + 15);
+  }
+}
+
+class Unit {
+  constructor(x, y, homeBase, targetBase, unitType = "normal") {
+    this.x = x;
+    this.y = y;
+    this.homeBase = homeBase;
+    this.team = homeBase.team;  // inherited from spawning base
+    this.unitType = unitType;
+    let params = unitParams[unitType];
+    this.hp = params.hp;
+    this.speed = params.speed;
+    this.radius = params.radius;
+    this.attackDamage = params.attackDamage;
+    this.col = homeBase.col;
+    // The mission remains fixed until fulfilled.
+    this.originalTargetBase = targetBase;
+    this.currentTarget = targetBase;
+    this.lastAttackTime = 0;
+    this.alive = true;
+    if (this.unitType === "middle") this.lockedTarget = null;
+  }
+
+  takeDamage(damage) {
+    this.hp -= damage;
+    if (this.hp <= 0) {
+      this.alive = false;
+      let idx = units.indexOf(this);
+      if (idx !== -1) units.splice(idx, 1);
+    }
+  }
+
+  findCapturableBase() {
+    let nearest = null, nearestDist = Infinity;
+    for (let b of bases) {
+      if (!b.alive) continue;
+      if (b.team && b.team.name === this.team.name) continue;
+      let d = dist(this.x, this.y, b.x + BASE_SIZE / 2, b.y + BASE_SIZE / 2);
+      if (d < captureRange && d < nearestDist) {
+        nearest = b;
+        nearestDist = d;
+      }
+    }
+    return nearest;
+  }
+
+  update() {
+    // choose a new target if the original task is fulfilled
+    if (this.originalTargetBase
+        && this.originalTargetBase.team
+        && this.originalTargetBase.team.name === this.team.name) {
+      let newTarget = chooseDecisionTarget(this.team);
+      this.originalTargetBase = newTarget;
+      this.currentTarget = newTarget;
+      if (this.unitType === "middle") this.lockedTarget = null;
+    }
+    if (!this.originalTargetBase) {
+      this.originalTargetBase = chooseTargetBase(this.team);
+      this.currentTarget = this.originalTargetBase;
+    }
+
+    // determine the aggro range
+    let currentAggoRange = this.isFriendlyBuildingAround()? unitParams[this.unitType].aroundBaseAggroRange : unitParams[this.unitType].aggroRange;
+
+    let enemyUnit = this.findNearestEnemyUnit(currentAggoRange);
+
+    if (enemyUnit && dist(this.x, this.y, enemyUnit.x, enemyUnit.y) <= currentAggoRange) {
+      this.currentTarget = enemyUnit;
+    } else {
+      let capturable = this.findCapturableBase();
+      if (capturable && capturable !== this.originalTargetBase) {
+        this.currentTarget = capturable;
+      } else {
+        this.currentTarget = this.originalTargetBase;
+      }
+    }
+
+    if (this.unitType === "middle") {
+      if (this.lockedTarget) {
+        let dLock = dist(this.x, this.y, this.lockedTarget.x, this.lockedTarget.y);
+        if (!this.lockedTarget.alive || dLock > unitParams.middle.range) {
+          this.lockedTarget = null;
+          this.currentTarget = this.originalTargetBase;
+        } else {
+          this.currentTarget = this.lockedTarget;
+        }
+      } else {
+        if (this.currentTarget instanceof Base) {
+          let enemyUnit2 = this.findNearestEnemyUnit(currentAggoRange);
+          if (enemyUnit2 && dist(this.x, this.y, enemyUnit2.x, enemyUnit2.y) <= unitParams.middle.range) {
+            this.lockedTarget = enemyUnit2;
+            this.currentTarget = enemyUnit2;
+          } else {
+            let capturable2 = this.findCapturableBase();
+            if (capturable2 && capturable2 !== this.originalTargetBase &&
+                dist(this.x, this.y, capturable2.x + BASE_SIZE/2, capturable2.y + BASE_SIZE/2) <= unitParams.middle.range) {
+              this.currentTarget = capturable2;
+            } else {
+              this.currentTarget = this.originalTargetBase;
+            }
+          }
+        }
+      }
+    } else if (this.unitType === "minion") {
+      let enemyForMinion = this.findNearestEnemyForMinion(currentAggoRange);
+      if (enemyForMinion && dist(this.x, this.y, enemyForMinion.x, enemyForMinion.y) <= unitParams.minion.aggroRange)
+        this.currentTarget = enemyForMinion;
+      else {
+        let capturable = this.findCapturableBase();
+        if (capturable && capturable !== this.originalTargetBase)
+          this.currentTarget = capturable;
+        else
+          this.currentTarget = this.originalTargetBase;
+      }
+    }
+
+    let targetPos = this.getTargetPosition();
+    if (targetPos) {
+      let desired = createVector(targetPos.x - this.x, targetPos.y - this.y);
+      desired.normalize();
+      let moveVec = desired;
+      let d = dist(this.x, this.y, targetPos.x, targetPos.y);
+      if (this.unitType === "middle") {
+        if (d > unitParams.middle.range) {
+          this.x += this.speed * moveVec.x;
+          this.y += this.speed * moveVec.y;
+        } else {
+          if (millis() - this.lastAttackTime > attackCooldown) {
+            this.lastAttackTime = millis();
+            if (this.currentTarget) {
+              let proj = new Projectile(this.x, this.y, this.currentTarget, this.attackDamage, this.speed * 1.5, 6, this.col, this.team);
+              projectiles.push(proj);
+            }
+          }
+        }
+      } else {
+        if (d > attackDistance) {
+          this.x += this.speed * moveVec.x;
+          this.y += this.speed * moveVec.y;
+        } else {
+          if (millis() - this.lastAttackTime > attackCooldown) {
+            this.lastAttackTime = millis();
+            this.attack(this.currentTarget);
+          }
+        }
+      }
+    }
+  }
+
+  getTargetPosition() {
+    if (!this.currentTarget) return null;
+    if (this.currentTarget instanceof Unit)
+      return { x: this.currentTarget.x, y: this.currentTarget.y };
+    else if (this.currentTarget instanceof Base)
+      return { x: this.currentTarget.x + BASE_SIZE/2, y: this.currentTarget.y + BASE_SIZE/2 };
+    return null;
+  }
+
+  findNearestEnemyUnit(aggroRange) {
+    let nearest = null, nearestDist = Infinity;
+    for (let other of units) {
+      if (other === this) continue;
+      if (other.team === this.team) continue;
+      let d = dist(this.x, this.y, other.x, other.y);
+      if (d < aggroRange && d < nearestDist) {
+        nearest = other;
+        nearestDist = d;
+      }
+    }
+    return nearest;
+  }
+
+  isFriendlyBuildingAround()
+  {
+    for (let base of bases) {
+      if(base.team !== this.team)
+      {
+        continue;
+      }
+
+      let d = dist(this.x, this.y, base.x, base.y);
+      if (d < 300) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  findNearestEnemyForMinion(aggroRange) {
+    let nearest = null, nearestDist = Infinity;
+    for (let other of units) {
+      if (other === this) continue;
+      if (other.team === this.team) continue;
+      let d = dist(this.x, this.y, other.x, other.y);
+      if (d < aggroRange && d < nearestDist) {
+        nearest = other;
+        nearestDist = d;
+      }
+    }
+    return nearest;
+  }
+
+  attack(target) {
+    if (!target) return;
+    if (target instanceof Unit) {
+      target.takeDamage(this.attackDamage);
+      if(!target.alive) {
+        this.currentTarget = this.originalTargetBase;
+        if (this.unitType === "middle") this.lockedTarget = null;
+      }
+    }
+    else if (target instanceof Base) {
+      target.takeDamage(this);
+      if (target.team === this) {
+        let newTarget = chooseDecisionTarget(this.team);
+        this.originalTargetBase = newTarget;
+        this.currentTarget = newTarget;
+        if (this.unitType === "middle") this.lockedTarget = null;
+      }
+    }
+  }
+
+  display() {
+    if (this.unitType === "middle") {
+      push();
+      translate(this.x, this.y);
+      let angle = 0;
+      if (this.currentTarget) angle = atan2(this.currentTarget.y - this.y, this.currentTarget.x - this.x);
+      rotate(angle);
+      fill(this.col);
+      let r = unitParams.middle.radius;
+      triangle(-r, r, r, r, 0, -r);
+      pop();
+    } else {
+      fill(this.col);
+      ellipse(this.x, this.y, this.radius * 2);
+    }
+    fill(0);
+    textSize(10);
+    textAlign(CENTER, BOTTOM);
+    text(this.hp, this.x, this.y - this.radius - 5);
+  }
+}
+
+class Projectile {
+  constructor(x, y, target, damage, speed, size, col, team) {
+    this.x = x;
+    this.y = y;
+    this.target = target;
+    this.attackDamage = damage;
+    this.team = team;
+    this.speed = speed;
+    this.size = size;
+    this.col = col;
+    this.toDelete = false;
+    this.targetPos;
+    this.distanceToTargetPos = 0;
+  }
+
+  update() {
+    if(this.target){
+      if (this.target instanceof Base)
+        this.targetPos = { x: this.target.x + BASE_SIZE/2, y: this.target.y + BASE_SIZE/2 };
+      else
+        this.targetPos = { x: this.target.x, y: this.target.y };
+    }
+
+    let v = createVector(this.targetPos.x - this.x, this.targetPos.y - this.y);
+    this.distanceToTargetPos = v.mag();
+
+    if (this.distanceToTargetPos < 5) {
+      this.toDelete = true;
+
+      if (this.target instanceof Base){
+        this.target.takeDamage(this);
+        return;
+      }
+      else{
+        this.target.takeDamage(this.attackDamage);
+        return;
+      }
+    }
+    v.normalize();
+    this.x += v.x * this.speed;
+    this.y += v.y * this.speed;
+  }
+
+  display() {
+    fill(this.col);
+    rectMode(CENTER);
+    rect(this.x, this.y, this.size, this.size);
+    rectMode(CORNER);
+  }
+}
+
+// --- Target Selection Functions ---
+
+function chooseTargetBase(ourTeam) {
+  let teamCounts = {};
+  for (let b of bases) {
+    if (!b.alive) continue;
+    if (b.team && b.team.name === ourTeam.name) continue;
+    if (b.type === "original" || b.type === "additional") {
+      let name = b.team ? b.team.name : "neutral";
+      teamCounts[name] = (teamCounts[name] || 0) + 1;
+    }
+  }
+  let teams = [];
+  for (let name in teamCounts) { teams.push({ name: name, count: teamCounts[name] }); }
+  if (teams.length === 0) {
+    let neutrals = bases.filter(b => b.alive && b.team == null);
+    if (neutrals.length > 0) return random(neutrals);
+    let others = bases.filter(b => b.alive && (!b.team || b.team.name !== ourTeam.name));
+    return random(others);
+  }
+  let maxCount = Math.max(...teams.map(t => t.count));
+  let totalWeight = 0;
+  let weightedTeams = [];
+  for (let t of teams) {
+    let weight = t.count;
+    if (t.count === maxCount) weight *= 1.1;
+    weightedTeams.push({ name: t.name, weight: weight });
+    totalWeight += weight;
+  }
+  let r = random(totalWeight);
+  let chosenTeamName;
+  for (let t of weightedTeams) {
+    r -= t.weight;
+    if (r <= 0) { chosenTeamName = t.name; break; }
+  }
+  let basesForTeam = bases.filter(b => b.alive && b.team && b.team.name === chosenTeamName && (b.type === "original" || b.type === "additional"));
+  let mainBases = basesForTeam.filter(b => b.type === "original");
+  let expansionBases = basesForTeam.filter(b => b.type === "additional");
+  if (mainBases.length > 0 && expansionBases.length > 0)
+    return (random() < 0.5) ? random(mainBases) : random(expansionBases);
+  else if (mainBases.length > 0) return random(mainBases);
+  else if (expansionBases.length > 0) return random(expansionBases);
+  return null;
+}
+
+function chooseDecisionTarget(ourTeam) {
+  let teamCounts = {};
+  for (let b of bases) {
+    if (!b.alive) continue;
+    if (b.team && b.team.name === ourTeam.name) continue;
+    if (b.type === "original" || b.type === "additional") {
+      let name = b.team ? b.team.name : "neutral";
+      teamCounts[name] = (teamCounts[name] || 0) + 1;
+    }
+  }
+  let teams = [];
+  for (let name in teamCounts) { teams.push({ name: name, count: teamCounts[name] }); }
+  if (teams.length === 0) return chooseTargetBase(ourTeam);
+  let maxCount = Math.max(...teams.map(t => t.count));
+  let totalWeight = 0;
+  let weightedTeams = [];
+  for (let t of teams) {
+    let weight = t.count;
+    if (t.count === maxCount) weight *= 1.1;
+    weightedTeams.push({ name: t.name, weight: weight });
+    totalWeight += weight;
+  }
+  let r = random(totalWeight);
+  let chosenTeamName;
+  for (let t of weightedTeams) {
+    r -= t.weight;
+    if (r <= 0) { chosenTeamName = t.name; break; }
+  }
+  let mainBase = bases.find(b => b.type === "original" && b.team && b.team.name === chosenTeamName);
+  let expansionBases = bases.filter(b => b.type === "additional" && b.team && b.team.name === chosenTeamName);
+  if (expansionBases.length > 0)
+    return (random() < 0.2) ? random(expansionBases) : mainBase;
+  else return mainBase;
+}
