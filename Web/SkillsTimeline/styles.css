@@ -1,0 +1,74 @@
+.tooltip {
+    position: absolute !important;
+    visibility: hidden !important;
+    background-color: #f9f9f9 !important;
+    border: 1px solid #d3d3d3 !important;
+    padding: 8px !important;
+    border-radius: 4px !important;
+    font-size: 12px !important;
+    z-index: 1000 !important; /* Ensure tooltip is on top */
+}
+
+.node text {
+    font: 12px sans-serif;
+    text-anchor: middle;
+}
+
+.link {
+    fill: none;
+    stroke: #555;
+    stroke-width: 2px;
+}
+
+.node circle {
+    fill: steelblue;
+    stroke: #fff;
+    stroke-width: 2px;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    overflow-y: scroll;
+    height: 100%;
+}
+
+#treeSvg {
+    width: 100vw;
+    display: block;
+    background-color: #2d2b2b;
+}
+
+.node-rect {
+    stroke: #333;
+    stroke-width: 1.5px;
+    transition: fill 0.2s ease, transform 0.2s ease; /* Add transform to the transition */
+    cursor: pointer; /* Makes the cursor a pointer when hovering over the rectangle */
+}
+
+.node-rect:hover {
+    stroke: #dfc3c3;
+    fill: #4a90e2;
+    transform: scale(1.1); /* Scale up by 10% when hovering */
+}
+
+.node text {
+    fill: white;
+    font-size: 12px;
+    user-select: none; /* Prevents text selection */
+    pointer-events: none; /* Makes the text "transparent" to mouse events */
+}
+
+/* LEVELS */
+.level-text{
+    font-family: Arial, Helvetica, sans-serif;
+    fill: #ccc;
+    font-size: 15px;
+}
+
+.level-line{
+    stroke: #ccc;
+    stroke-dasharray: 4,2;
+    stroke-width: 1px;
+    pointer-events: none;
+}
